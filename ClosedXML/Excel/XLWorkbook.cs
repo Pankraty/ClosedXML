@@ -56,7 +56,7 @@ namespace ClosedXML.Excel
         {
             get
             {
-                return XLStyle.Default.Value;
+                return XLStyleValue.Default;
             }
         }
 
