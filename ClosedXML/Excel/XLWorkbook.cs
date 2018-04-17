@@ -52,6 +52,14 @@ namespace ClosedXML.Excel
             }
         }
 
+        internal static XLStyleValue DefaultStyleValue
+        {
+            get
+            {
+                return XLStyle.Default.Value;
+            }
+        }
+
         public static Double DefaultRowHeight { get; private set; }
         public static Double DefaultColumnWidth { get; private set; }
 
