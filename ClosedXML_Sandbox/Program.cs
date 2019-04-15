@@ -6,21 +6,16 @@ namespace ClosedXML_Sandbox
     {
         private static void Main(string[] args)
         {
-            Console.WriteLine("Running {0}", nameof(PerformanceRunner.OpenTestFile));
-            PerformanceRunner.TimeAction(PerformanceRunner.OpenTestFile);
-            Console.WriteLine();
-
-            // Disable this block by default - I don't use it often
-#if false
-
-            Console.WriteLine("Running {0}", nameof(PerformanceRunner.RunInsertTable));
-            PerformanceRunner.TimeAction(PerformanceRunner.RunInsertTable);
-            Console.WriteLine();
-
-            Console.WriteLine("Running {0}", nameof(PerformanceRunner.PerformHeavyCalculation));
-            PerformanceRunner.TimeAction(PerformanceRunner.PerformHeavyCalculation);
-            Console.WriteLine();
-#endif
+            var i = 1;
+            var count = i;
+            do
+            {
+                Console.WriteLine("Running {0}({1})", nameof(PerformanceRunner.RunMerge), count);
+                PerformanceRunner.TimeAction(() => PerformanceRunner.RunMerge(count));
+                count *= 2;
+                i++;
+            } while (i < 12);
+            //PerformanceRunner.TimeAction(() => PerformanceRunner.RunMerge(256));
 
             Console.WriteLine("Press any key to continue");
             Console.ReadKey();

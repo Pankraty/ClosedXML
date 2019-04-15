@@ -165,5 +165,23 @@ namespace ClosedXML_Sandbox
                 Console.WriteLine("Total sum: {0:N2}", sum1);
             }
         }
+
+        internal static void RunMerge(int count)
+        {
+            using (var wb = new XLWorkbook())
+            {
+                var ws = wb.AddWorksheet();
+
+                for (int i = 0; i < count; i++)
+                {
+                    var row1 = rnd.Next(XLHelper.MaxRowNumber / 2) + 1;
+                    var row2 = rnd.Next(10) + row1;
+                    var col1 = rnd.Next(XLHelper.MaxColumnNumber / 2) + 1;
+                    var col2 = rnd.Next(10) + col1;
+
+                    ws.Range(row1, col1, row2, col2).Merge();
+                }
+            }
+        }
     }
 }
