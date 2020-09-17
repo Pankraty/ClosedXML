@@ -180,7 +180,7 @@ namespace ClosedXML.Excel.CalcEngine.Functions
 
         private static object N(List<Expression> p)
         {
-            return (double)p[0];
+            return (double)p[0].WithCoersionConvention(CoersionConvention.StringOrNullAsZero);
         }
 
         private static object NA(List<Expression> p)
