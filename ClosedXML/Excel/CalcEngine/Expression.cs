@@ -2,15 +2,30 @@ using ClosedXML.Excel.CalcEngine.Exceptions;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 
 namespace ClosedXML.Excel.CalcEngine
 {
+    [Flags]
+    internal enum CoersionConvention
+    {
+        None = 0,
+        EmptyStringAsZero = 1 << 0,
+        NonEmptyStringAsZero = 1 << 1,
+        NullAsZero = 1 << 2,
+        CaseInsensitive = 1 << 3,
+
+        Default = NullAsZero,
+        AnyStringAsZero = EmptyStringAsZero | NonEmptyStringAsZero,
+        StringOrNullAsZero = AnyStringAsZero | NullAsZero
+    }
+
     internal abstract class ExpressionBase
     {
         public abstract string LastParseItem { get; }
+
+        public abstract Expression WithCoersionConvention(CoersionConvention convention);
     }
 
     /// <summary>
@@ -29,6 +44,7 @@ namespace ClosedXML.Excel.CalcEngine
 
         #region ** fields
 
+        protected readonly CoersionConvention _convention;
         internal readonly Token _token;
 
         #endregion ** fields
@@ -37,17 +53,20 @@ namespace ClosedXML.Excel.CalcEngine
 
         #region ** ctors
 
-        internal Expression()
+        internal Expression(CoersionConvention convention = CoersionConvention.Default)
         {
+            _convention = convention;
             _token = new Token(null, TKID.ATOM, TKTYPE.IDENTIFIER);
         }
 
-        internal Expression(object value)
+        internal Expression(object value, CoersionConvention convention = CoersionConvention.Default)
+            : this(convention)
         {
             _token = new Token(value, TKID.ATOM, TKTYPE.LITERAL);
         }
 
-        internal Expression(Token tk)
+        internal Expression(Token tk, CoersionConvention convention = CoersionConvention.Default)
+            : this(convention)
         {
             _token = tk;
         }
@@ -64,7 +83,7 @@ namespace ClosedXML.Excel.CalcEngine
             {
                 throw new ArgumentException("Bad expression.");
             }
-            return _token.Value;
+            return CellValueException.CatchTypeConversionExceptions(() => _token.Value);
         }
 
         public virtual Expression Optimize()
@@ -126,20 +145,24 @@ namespace ClosedXML.Excel.CalcEngine
             }
 
             // handle string
-            if (v is string s && double.TryParse(s, out var doubleValue))
+            if (v is string s)
             {
-                return doubleValue;
+                if (x._convention.HasFlag(CoersionConvention.EmptyStringAsZero) && string.IsNullOrEmpty(s))
+                    return 0;
+                else if (x._convention.HasFlag(CoersionConvention.NonEmptyStringAsZero) && !string.IsNullOrEmpty(s))
+                    return 0;
+                else if (double.TryParse(s, out var doubleValue))
+                    return doubleValue;
             }
 
             // handle nulls
-            if (v == null || v is string)
+            if (x._convention.HasFlag(CoersionConvention.NullAsZero) && v == null)
             {
                 return 0;
             }
 
             // handle everything else
-            CultureInfo _ci = Thread.CurrentThread.CurrentCulture;
-            return (double)Convert.ChangeType(v, typeof(double), _ci);
+            return ConvertTo<double>(v);
         }
 
         public static implicit operator bool(Expression x)
@@ -169,7 +192,7 @@ namespace ClosedXML.Excel.CalcEngine
             }
 
             // handle everything else
-            return (double)Convert.ChangeType(v, typeof(double)) != 0;
+            return ConvertTo<double>(v) != 0;
         }
 
         public static implicit operator DateTime(Expression x)
@@ -198,8 +221,12 @@ namespace ClosedXML.Excel.CalcEngine
             }
 
             // handle everything else
-            CultureInfo _ci = Thread.CurrentThread.CurrentCulture;
-            return (DateTime)Convert.ChangeType(v, typeof(DateTime), _ci);
+            return ConvertTo<DateTime>(v);
+        }
+
+        private static T ConvertTo<T>(object v)
+        {
+            return (T)Convert.ChangeType(v, typeof(T), Thread.CurrentThread.CurrentCulture);
         }
 
         #endregion ** implicit converters
@@ -208,7 +235,9 @@ namespace ClosedXML.Excel.CalcEngine
 
         #region ** IComparable<Expression>
 
-        public int CompareTo(Expression other)
+        public int CompareTo(Expression other) => CompareTo(other, _convention);
+
+        public int CompareTo(Expression other, CoersionConvention convention)
         {
             // get both values
             var c1 = this.Evaluate() as IComparable;
@@ -248,7 +277,10 @@ namespace ClosedXML.Excel.CalcEngine
 
             // String comparisons should be case insensitive
             if (c1 is string s1 && c2 is string s2)
-                return StringComparer.OrdinalIgnoreCase.Compare(s1, s2);
+            {
+                var comparer = convention.HasFlag(CoersionConvention.CaseInsensitive) ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+                return comparer.Compare(s1, s2);
+            }
             else
                 return c1.CompareTo(c2);
         }
@@ -264,6 +296,11 @@ namespace ClosedXML.Excel.CalcEngine
             get { return _token?.Value?.ToString() ?? "Unknown value"; }
         }
 
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new Expression(_token, convention);
+        }
+
         #endregion ** ExpressionBase
     }
 
@@ -273,7 +310,8 @@ namespace ClosedXML.Excel.CalcEngine
     internal class UnaryExpression : Expression
     {
         // ** ctor
-        public UnaryExpression(Token tk, Expression expr) : base(tk)
+        public UnaryExpression(Token tk, Expression expr, CoersionConvention convention = CoersionConvention.Default)
+            : base(tk, convention)
         {
             Expression = expr;
         }
@@ -283,28 +321,30 @@ namespace ClosedXML.Excel.CalcEngine
         // ** object model
         override public object Evaluate()
         {
-            switch (_token.ID)
+            return CellValueException.CatchTypeConversionExceptions(() => _token.ID switch
             {
-                case TKID.ADD:
-                    return +(double)Expression;
-
-                case TKID.SUB:
-                    return -(double)Expression;
-            }
-            throw new ArgumentException("Bad expression.");
+                TKID.ADD => +(double)Expression,
+                TKID.SUB => -(double)Expression,
+                _ => throw new ArgumentException("Bad expression."),
+            });
         }
 
         public override Expression Optimize()
         {
             Expression = Expression.Optimize();
             return Expression._token.Type == TKTYPE.LITERAL
-                ? new Expression(this.Evaluate())
+                ? new Expression(this.Evaluate(), this._convention)
                 : this;
         }
 
         public override string LastParseItem
         {
             get { return Expression.LastParseItem; }
+        }
+
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new UnaryExpression(_token, Expression, convention);
         }
     }
 
@@ -314,7 +354,8 @@ namespace ClosedXML.Excel.CalcEngine
     internal class BinaryExpression : Expression
     {
         // ** ctor
-        public BinaryExpression(Token tk, Expression exprLeft, Expression exprRight) : base(tk)
+        public BinaryExpression(Token tk, Expression exprLeft, Expression exprRight, CoersionConvention convention = CoersionConvention.Default)
+            : base(tk, convention)
         {
             LeftExpression = exprLeft;
             RightExpression = exprRight;
@@ -326,66 +367,69 @@ namespace ClosedXML.Excel.CalcEngine
         // ** object model
         override public object Evaluate()
         {
-            // handle comparisons
-            if (_token.Type == TKTYPE.COMPARE)
+            return CellValueException.CatchTypeConversionExceptions<object>(() =>
             {
-                var cmp = LeftExpression.CompareTo(RightExpression);
+                // handle comparisons
+                if (_token.Type == TKTYPE.COMPARE)
+                {
+                    var cmp = LeftExpression.CompareTo(RightExpression, _convention);
+                    switch (_token.ID)
+                    {
+                        case TKID.GT: return cmp > 0;
+                        case TKID.LT: return cmp < 0;
+                        case TKID.GE: return cmp >= 0;
+                        case TKID.LE: return cmp <= 0;
+                        case TKID.EQ: return cmp == 0;
+                        case TKID.NE: return cmp != 0;
+                    }
+                }
+
+                // handle everything else
                 switch (_token.ID)
                 {
-                    case TKID.GT: return cmp > 0;
-                    case TKID.LT: return cmp < 0;
-                    case TKID.GE: return cmp >= 0;
-                    case TKID.LE: return cmp <= 0;
-                    case TKID.EQ: return cmp == 0;
-                    case TKID.NE: return cmp != 0;
+                    case TKID.CONCAT:
+                        return (string)LeftExpression + (string)RightExpression;
+
+                    case TKID.ADD:
+                        return (double)LeftExpression + (double)RightExpression;
+
+                    case TKID.SUB:
+                        return (double)LeftExpression - (double)RightExpression;
+
+                    case TKID.MUL:
+                        return (double)LeftExpression * (double)RightExpression;
+
+                    case TKID.DIV:
+                        if (Math.Abs((double)RightExpression) < double.Epsilon)
+                            throw new DivisionByZeroException();
+
+                        return (double)LeftExpression / (double)RightExpression;
+
+                    case TKID.DIVINT:
+                        if (Math.Abs((double)RightExpression) < double.Epsilon)
+                            throw new DivisionByZeroException();
+
+                        return (double)(int)((double)LeftExpression / (double)RightExpression);
+
+                    case TKID.MOD:
+                        if (Math.Abs((double)RightExpression) < double.Epsilon)
+                            throw new DivisionByZeroException();
+
+                        return (double)(int)((double)LeftExpression % (double)RightExpression);
+
+                    case TKID.POWER:
+                        var a = (double)LeftExpression;
+                        var b = (double)RightExpression;
+                        if (b == 0.0) return 1.0;
+                        if (b == 0.5) return Math.Sqrt(a);
+                        if (b == 1.0) return a;
+                        if (b == 2.0) return a * a;
+                        if (b == 3.0) return a * a * a;
+                        if (b == 4.0) return a * a * a * a;
+                        return Math.Pow((double)LeftExpression, (double)RightExpression);
                 }
-            }
-
-            // handle everything else
-            switch (_token.ID)
-            {
-                case TKID.CONCAT:
-                    return (string)LeftExpression + (string)RightExpression;
-
-                case TKID.ADD:
-                    return (double)LeftExpression + (double)RightExpression;
-
-                case TKID.SUB:
-                    return (double)LeftExpression - (double)RightExpression;
-
-                case TKID.MUL:
-                    return (double)LeftExpression * (double)RightExpression;
-
-                case TKID.DIV:
-                    if (Math.Abs((double)RightExpression) < double.Epsilon)
-                        throw new DivisionByZeroException();
-
-                    return (double)LeftExpression / (double)RightExpression;
-
-                case TKID.DIVINT:
-                    if (Math.Abs((double)RightExpression) < double.Epsilon)
-                        throw new DivisionByZeroException();
-
-                    return (double)(int)((double)LeftExpression / (double)RightExpression);
-
-                case TKID.MOD:
-                    if (Math.Abs((double)RightExpression) < double.Epsilon)
-                        throw new DivisionByZeroException();
-
-                    return (double)(int)((double)LeftExpression % (double)RightExpression);
-
-                case TKID.POWER:
-                    var a = (double)LeftExpression;
-                    var b = (double)RightExpression;
-                    if (b == 0.0) return 1.0;
-                    if (b == 0.5) return Math.Sqrt(a);
-                    if (b == 1.0) return a;
-                    if (b == 2.0) return a * a;
-                    if (b == 3.0) return a * a * a;
-                    if (b == 4.0) return a * a * a * a;
-                    return Math.Pow((double)LeftExpression, (double)RightExpression);
-            }
-            throw new ArgumentException("Bad expression.");
+                throw new ArgumentException("Bad expression.");
+            });
         }
 
         public override Expression Optimize()
@@ -393,13 +437,18 @@ namespace ClosedXML.Excel.CalcEngine
             LeftExpression = LeftExpression.Optimize();
             RightExpression = RightExpression.Optimize();
             return LeftExpression._token.Type == TKTYPE.LITERAL && RightExpression._token.Type == TKTYPE.LITERAL
-                ? new Expression(this.Evaluate())
+                ? new Expression(this.Evaluate(), this._convention)
                 : this;
         }
 
         public override string LastParseItem
         {
             get { return RightExpression.LastParseItem; }
+        }
+
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new BinaryExpression(_token, LeftExpression, RightExpression, convention);
         }
     }
 
@@ -409,10 +458,12 @@ namespace ClosedXML.Excel.CalcEngine
     internal class FunctionExpression : Expression
     {
         // ** ctor
-        internal FunctionExpression()
+        internal FunctionExpression(CoersionConvention convention)
+            : base(convention)
         { }
 
-        public FunctionExpression(FunctionDefinition function, List<Expression> parms)
+        public FunctionExpression(FunctionDefinition function, List<Expression> parms, CoersionConvention convention = CoersionConvention.Default)
+            : this(convention)
         {
             FunctionDefinition = function;
             Parameters = parms;
@@ -421,7 +472,7 @@ namespace ClosedXML.Excel.CalcEngine
         // ** object model
         override public object Evaluate()
         {
-            return FunctionDefinition.Function(Parameters);
+            return CellValueException.CatchTypeConversionExceptions(() => FunctionDefinition.Function(Parameters));
         }
 
         public FunctionDefinition FunctionDefinition { get; }
@@ -443,13 +494,18 @@ namespace ClosedXML.Excel.CalcEngine
                 }
             }
             return allLits
-                ? new Expression(this.Evaluate())
+                ? new Expression(this.Evaluate(), this._convention)
                 : this;
         }
 
         public override string LastParseItem
         {
             get { return Parameters.Last().LastParseItem; }
+        }
+
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new FunctionExpression(FunctionDefinition, Parameters, convention);
         }
     }
 
@@ -461,7 +517,8 @@ namespace ClosedXML.Excel.CalcEngine
         private readonly Dictionary<string, object> _dct;
         private readonly string _name;
 
-        public VariableExpression(Dictionary<string, object> dct, string name)
+        public VariableExpression(Dictionary<string, object> dct, string name, CoersionConvention convention = CoersionConvention.Default)
+            : base(convention)
         {
             _dct = dct;
             _name = name;
@@ -476,6 +533,11 @@ namespace ClosedXML.Excel.CalcEngine
         {
             get { return _name; }
         }
+
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new VariableExpression(_dct, _name, convention);
+        }
     }
 
     /// <summary>
@@ -486,7 +548,8 @@ namespace ClosedXML.Excel.CalcEngine
         private readonly object _value;
 
         // ** ctor
-        internal XObjectExpression(object value)
+        internal XObjectExpression(object value, CoersionConvention convention = CoersionConvention.Default)
+            : base(convention)
         {
             _value = value;
         }
@@ -497,10 +560,9 @@ namespace ClosedXML.Excel.CalcEngine
         public override object Evaluate()
         {
             // use IValueObject if available
-            var iv = _value as IValueObject;
-            if (iv != null)
+            if (_value is IValueObject iv)
             {
-                return iv.GetValue();
+                return iv.GetValue(emptyStringAsNull: true);
             }
 
             // return raw object
@@ -527,6 +589,11 @@ namespace ClosedXML.Excel.CalcEngine
         public override string LastParseItem
         {
             get { return Value.ToString(); }
+        }
+
+        public override Expression WithCoersionConvention(CoersionConvention convention)
+        {
+            return new XObjectExpression(_value, convention);
         }
     }
 
@@ -598,6 +665,6 @@ namespace ClosedXML.Excel.CalcEngine
     /// </summary>
     public interface IValueObject
     {
-        object GetValue();
+        object GetValue(bool emptyStringAsNull);
     }
 }
