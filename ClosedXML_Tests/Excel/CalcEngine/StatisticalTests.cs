@@ -259,18 +259,36 @@ namespace ClosedXML_Tests.Excel.CalcEngine
             Assert.AreEqual(expectedValue, currentValue, tolerance);
         }
 
-        [TestCase("D3:D45", typeof(CellValueException), "Parameter non numeric.")]
-        [TestCase("D3", typeof(CellValueException), "Parameter non numeric.")]
-        [TestCase("H3", typeof(NumberException), "Incorrect value. Should be: -1 > x < 1.")]
-        [TestCase("-1", typeof(NumberException), "Incorrect value. Should be: -1 > x < 1.")]
-        [TestCase("1", typeof(NumberException), "Incorrect value. Should be: -1 > x < 1.")]
-        public void Fisher_IncorrectCases(string sourceValue, Type exceptionType, string exceptionMessage)
+        [TestCase("Z3", 0)]
+        [TestCase("Z3:Z4", 0)]
+        [TestCase("FALSE", 0)]
+        public void Fisher_EdgeCases(string sourceValue, double expectedValue)
+        {
+            var ws = workbook.Worksheets.First();
+            double currentValue = ws.Evaluate($"=FISHER({sourceValue})").CastTo<double>();
+            Assert.AreEqual(expectedValue, currentValue, tolerance);
+        }
+
+        [TestCase("D3:D45")]
+        [TestCase("D3")]
+        [TestCase("\" \"")]
+        [TestCase("\"\"")]
+        public void Fisher_NonNumeric_Argument(string sourceValue)
         {
             var ws = workbook.Worksheets.First();
 
-            Assert.Throws(
-                Is.TypeOf(exceptionType).And.Message.EqualTo(exceptionMessage),
-                () => ws.Evaluate($"=FISHER({sourceValue})"));
+            Assert.Throws<CellValueException>(() => ws.Evaluate($"=FISHER({sourceValue})"), "Unable to convert value to the desired type.");
+        }
+
+        [TestCase("H3")]
+        [TestCase("-1")]
+        [TestCase("1")]
+        [TestCase("TRUE")]
+        public void Fisher_OutOfRange_Argument(string sourceValue)
+        {
+            var ws = workbook.Worksheets.First();
+
+            Assert.Throws<NumberException>(() => ws.Evaluate($"=FISHER({sourceValue})"), "Incorrect value. Should be: -1 > x < 1.");
         }
 
         [Test]
